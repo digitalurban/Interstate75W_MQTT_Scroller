@@ -54,7 +54,6 @@ Wifi is  up
    ```sh
    git clone git clone https://github.com/yourusername/interstate75w-mqtt-display.git
    cd interstate75w-mqtt-display
-   cd interstate75w-mqtt-display
    ```
 
 2. **Upload the code to your microcontroller:**
