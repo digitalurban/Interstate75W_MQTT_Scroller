@@ -52,7 +52,8 @@ Wifi is  up
 
 1. **Clone this repository:**
    ```sh
-   git clone https://github.com/yourusername/interstate75w-mqtt-display.git
+   git clone git clone https://github.com/yourusername/interstate75w-mqtt-display.git
+   cd interstate75w-mqtt-display
    cd interstate75w-mqtt-display
    ```
 
