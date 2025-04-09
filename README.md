@@ -31,7 +31,7 @@ It uses an open MQTT text feed as a demo, you can edit to add your own feed and 
 ## Hardware Requirements
 
 - Pimoroni Interstate75W
-- HUB75 LED matrix display - we used a 32x64 pixel display with a 4mm pitch
+- HUB75 LED matrix display - we used a 32x64 pixel display with a 4mm pitch (a new version with the 128x128 Matrix is also now available in the code files)
 - 3D Printed Case is available at (https://www.printables.com/model/939763-hub75-display-case-for-the-interstate75w-32x64-4mm)
 - MQTT broker (local or cloud-based) - a demo mqtt feed is included in the code - note the demo feed sends a message approximatly every 3 minutes. Upon connected you should get the message Checking WiFi integrity.
 
