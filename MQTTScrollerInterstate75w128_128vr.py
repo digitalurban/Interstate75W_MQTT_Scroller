@@ -5,20 +5,26 @@ import uasyncio as asyncio
 import machine
 import time
 
+# Global text scaling factor (adjust this to change text size)
+TEXT_SCALE = 1
+
+# Global screen speed factor: increase to slow down scrolling, decrease to speed up.
+GLOBAL_SCREEN_SPEED = 4.0
+
 # Constants for controlling scrolling text
-BACKGROUND_COLOUR = (0, 0, 0)  # Black background to turn off the screen
-HOLD_TIME = 2.0
-BLANK_SCREEN_TIME = 3
-BUFFER_PIXELS = 2  # Increased buffer to ensure full scroll off
-SCROLL_SPEED_LEVEL = 10  # Set the desired scrolling speed level (1 to 10)
-SCROLL_SPEED = 1 / SCROLL_SPEED_LEVEL  # Convert to a delay in seconds
+BACKGROUND_COLOUR = (0, 0, 0)  # Black background
+HOLD_TIME = 2.0                # Seconds before scrolling starts
+BLANK_SCREEN_TIME = 3          # Seconds to hold blank screen after scroll off
+BUFFER_PIXELS = 2              # Extra buffer to ensure full scroll off
+SCROLL_STEP = 1                # Scroll 1 pixel at a time
+SCROLL_DELAY = 0.01 * GLOBAL_SCREEN_SPEED  # Delay in seconds for each scroll step
 
 # Brightness settings
-brightness = 100  # Initial brightness (0 to 100)
+brightness = 100               # Initial brightness (0 to 100)
 
 # State constants
 STATE_PRE_SCROLL = 0
-STATE_SCROLLING = 1
+STATE_SCROLLING  = 1
 STATE_POST_SCROLL = 2
 STATE_BLANK_SCREEN = 3
 
@@ -58,78 +64,83 @@ def set_brightness(level):
     black, red, green, blue, yellow, orange, white = initialize_colors(brightness)
     update_display()
 
-# Set initial brightness
+# Set initial brightness and background
 set_brightness(brightness)
-
-# Set initial background
 graphics.set_pen(black)
 graphics.clear()
 i75.update(graphics)
 i75.set_led(0, 0, 0)
 
-# Display-related functions
+# --------------------- Drawing Helper Functions ---------------------
 def set_background(color):
     graphics.set_pen(color)
     graphics.clear()
 
-def draw_text_with_outline_multiline(text, x, y, scale=1, text_color=white, outline_color=black, line_height=8):
+def draw_text_with_outline_multiline(text, x, y, scale=TEXT_SCALE, text_color=white, outline_color=black, line_height=8):
+    # Use a font that supports scaling; here we assume "bitmap8" is available.
     graphics.set_font("bitmap8")
     lines = text.split('\n')
+    scaled_line_height = line_height * scale
     for line_num, line in enumerate(lines):
-        y_offset = y + (line_num * line_height * scale)
-        graphics.set_pen(outline_color)
+        y_offset = y + (line_num * scaled_line_height)
+        # Draw an outline for better contrast.
         offsets = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+        graphics.set_pen(outline_color)
         for dx, dy in offsets:
             graphics.text(line, x + dx, y_offset + dy, -1, scale)
         graphics.set_pen(text_color)
         graphics.text(line, x, y_offset, -1, scale)
 
-# MQTT Message Subscription and Display
+# --------------------- MQTT Message and Scrolling ---------------------
 def sub_cb(topic, msg, retained):
-    global STATE_PRE_SCROLL, STATE_SCROLLING, STATE_POST_SCROLL, STATE_BLANK_SCREEN, width, height, black, red, green, blue, yellow, orange, white, brightness
+    global STATE_PRE_SCROLL, STATE_SCROLLING, STATE_POST_SCROLL, STATE_BLANK_SCREEN, width, height
     print(f'Topic: "{topic.decode()}" Message: "{msg.decode()}" Retained: {retained}')
     state = STATE_PRE_SCROLL
     scroll = 0
     DATA = msg.decode('utf-8')
+    # Add spaces before and after message so it scrolls cleanly
     MESSAGE = "     " + DATA + "     "
 
-    # Split the message into words and then into lines that fit the screen width.
+    # Wrap text: split MESSAGE into words and build lines that fit on screen.
     words = MESSAGE.split()
     lines = []
     current_line = ""
+    # Use the global TEXT_SCALE in measuring text width.
     for word in words:
-        if graphics.measure_text(current_line + " " + word, 1) <= width - 2 * (BUFFER_PIXELS + 1):
-            current_line += " " + word
+        if graphics.measure_text((current_line + " " + word).strip(), TEXT_SCALE) <= width - 2 * (BUFFER_PIXELS + 1):
+            current_line = (current_line + " " + word).strip()
         else:
-            lines.append(current_line.strip())
+            lines.append(current_line)
             current_line = word
     if current_line:
-        lines.append(current_line.strip())
-
+        lines.append(current_line)
+    # Join lines into a multi-line string (separated by newline).
     message_lines = "\n".join(lines)
     num_lines = len(lines)
-    line_height = 8  # Font height for scale 1
+    # Calculate scaled line height from the font height (assumed 8 for bitmap8)
+    line_height = 8 * TEXT_SCALE
 
-    # Compute the total scroll distance and initialize the mid-scroll pause flag
+    # Compute total scroll distance: text height plus extra buffer
     total_scroll = num_lines * line_height + height + BUFFER_PIXELS + 1
     mid_pause_done = False
-
     last_time = time.ticks_ms()
 
     while True:
         time_ms = time.ticks_ms()
 
+        # Transition from pre-scroll (hold) to scrolling
         if state == STATE_PRE_SCROLL and time_ms - last_time > HOLD_TIME * 1000:
             state = STATE_SCROLLING
             last_time = time_ms
 
-        if state == STATE_SCROLLING and time_ms - last_time > SCROLL_SPEED * 1000:
-            scroll += 1
+        # When scrolling, move the text by SCROLL_STEP when enough time has elapsed
+        if state == STATE_SCROLLING and time_ms - last_time > SCROLL_DELAY * 1000:
+            scroll += SCROLL_STEP
 
-            # Check if we have reached mid-scroll and haven't paused yet.
+            # Add a mid-scroll pause for 5 seconds once halfway through
             if not mid_pause_done and scroll >= total_scroll // 2:
                 print("Pausing mid-scroll for 5 seconds...")
-                time.sleep(5)  # Pause the scrolling for 5 seconds
+                time.sleep(5)  # Blocking pause; adjust if needed
                 mid_pause_done = True
 
             if scroll >= total_scroll:
@@ -147,10 +158,10 @@ def sub_cb(topic, msg, retained):
             i75.update(graphics)
             break
 
-        # Update brightness for dynamic adjustment
+        # Update brightness (in case it has changed dynamically)
         black, red, green, blue, yellow, orange, white = initialize_colors(brightness)
 
-        # Set background based on message type
+        # Set background color based on message content (customize keywords as desired)
         if "Time" in MESSAGE:
             set_background(yellow)
         elif "News" in MESSAGE:
@@ -158,21 +169,23 @@ def sub_cb(topic, msg, retained):
         elif "Weather" in MESSAGE:
             set_background(blue)
         elif "Air" in MESSAGE:
-            set_background(green)    
+            set_background(green)
         else:
             set_background(blue)
 
-        # Draw the text with an outline
+        # Draw the multi-line text with an outline.
+        # The vertical starting point is computed so that the text scrolls upward.
         draw_text_with_outline_multiline(message_lines,
                                          x=BUFFER_PIXELS + 1,
                                          y=height - scroll + BUFFER_PIXELS,
-                                         scale=1,
+                                         scale=TEXT_SCALE,
                                          text_color=white,
-                                         outline_color=black)
-
+                                         outline_color=black,
+                                         line_height=8)
         i75.update(graphics)
-        time.sleep(0.001)
-# Demonstrate scheduler is operational.
+        time.sleep(SCROLL_DELAY)
+        
+# --------------------- Async Helper Functions ---------------------
 async def heartbeat():
     s = True
     while True:
@@ -182,12 +195,10 @@ async def heartbeat():
 
 async def wifi_han(state):
     wifi_led(not state)
-    print('Wifi is ', 'up' if state else 'down')
+    print('Wifi is', 'up' if state else 'down')
     await asyncio.sleep(1)
 
-# If you connect with clean_session True, must re-subscribe (MQTT spec 3.1.2.4)
 async def conn_han(client):
-    # MQTT Subscribe Topic
     await client.subscribe('personal/ucfnaps/led/#', 1)
 
 async def main(client):
@@ -200,14 +211,13 @@ async def main(client):
     while True:
         await asyncio.sleep(5)
 
-# Define configuration
+# --------------------- MQTT and Scheduler Setup ---------------------
 config['subs_cb'] = sub_cb
 config['wifi_coro'] = wifi_han
 config['connect_coro'] = conn_han
 config['clean'] = True
 
-# Set up client
-MQTTClient.DEBUG = True  # Optional
+MQTTClient.DEBUG = True  # Optional debug output
 client = MQTTClient(config)
 
 asyncio.create_task(heartbeat())
@@ -215,5 +225,5 @@ asyncio.create_task(heartbeat())
 try:
     asyncio.run(main(client))
 finally:
-    client.close()  # Prevent LmacRxBlk:1 errors
+    client.close()
     asyncio.new_event_loop()
