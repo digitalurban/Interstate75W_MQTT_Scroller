@@ -29,14 +29,14 @@ BLUE   = create_pen(0, 0, 255)
 YELLOW = create_pen(255, 255, 0)
 ORANGE = create_pen(255, 165, 0)
 
-state = { "text": "Booting...", "color": ORANGE, "new_msg": True }
+# --- THE QUEUE (The Playlist) ---
+# We start with "Booting..." in the queue
+msg_queue = [("Booting...", ORANGE)]
 
-def update_status(text, color):
-    if state["text"] != text:
-        state["text"] = text
-        state["color"] = color
-        state["new_msg"] = True
-        print(f"Status: {text}")
+def add_to_queue(text, color):
+    # Add new message to the end of the line
+    print(f"Queued: {text}")
+    msg_queue.append((text, color))
 
 def wrap_text(text):
     words = text.split()
@@ -66,29 +66,31 @@ def draw_frame(lines, y_pos, pen):
         graphics.text(line, 2, line_y, -1, 1)
     i75.update(graphics)
 
-# --- Smart Animation Task ---
+# --- Smart Animation Task (With Queue) ---
 async def display_task():
     graphics.set_pen(BLACK)
     graphics.clear()
     i75.update(graphics)
 
     while True:
-        while not state["new_msg"]:
+        # 1. Wait for something in the queue
+        while len(msg_queue) == 0:
             await asyncio.sleep_ms(100)
         
-        state["new_msg"] = False
-        text = state["text"]
-        bg_pen = state["color"]
+        # 2. Pop the first message off the list
+        text, bg_pen = msg_queue.pop(0)
+        
         lines = wrap_text(text)
         total_height = len(lines) * 8
-        
         is_long = total_height > (height - 4) 
 
+        # Lock GC for smoothness
         gc.collect()
         gc.disable()
 
         try:
             if is_long:
+                # Continuous Scroll (No Pause)
                 y_pos = height
                 target = -(total_height + 2)
                 while y_pos > target:
@@ -99,9 +101,11 @@ async def display_task():
                     delay = max(1, SCROLL_SPEED_MS - diff)
                     await asyncio.sleep_ms(delay)
             else:
+                # Center and Pause
                 center_y = int((height - total_height) / 2)
                 final_y = -(total_height + 2)
 
+                # Scroll In
                 y_pos = height
                 while y_pos > center_y:
                     start = time.ticks_ms()
@@ -111,12 +115,14 @@ async def display_task():
                     delay = max(1, SCROLL_SPEED_MS - diff)
                     await asyncio.sleep_ms(delay)
 
+                # Pause (Unlock GC briefly)
                 gc.enable() 
                 draw_frame(lines, center_y, bg_pen)
                 await asyncio.sleep(MIN_DISPLAY_SEC)
                 gc.collect() 
                 gc.disable()
 
+                # Scroll Out
                 y_pos = center_y
                 while y_pos > final_y:
                     start = time.ticks_ms()
@@ -137,13 +143,13 @@ async def display_task():
 # --- Network Handlers ---
 async def wifi_han(is_up):
     wifi_led(not is_up)
-    if is_up: update_status("WiFi Connected", BLUE)
-    else: update_status("WiFi Lost", RED)
+    if is_up: add_to_queue("WiFi Connected", BLUE)
+    else: add_to_queue("WiFi Lost", RED)
     await asyncio.sleep(1)
 
 async def conn_han(client):
     await client.subscribe('personal/ucfnaps/led/#', 1)
-    update_status("MQTT Ready", GREEN)
+    add_to_queue("MQTT Ready", GREEN)
 
 def sub_cb(topic, msg, retained):
     text = msg.decode('utf-8')
@@ -152,7 +158,7 @@ def sub_cb(topic, msg, retained):
     if "Time" in text: color = YELLOW
     elif "News" in text: color = RED
     elif "Air" in text: color = GREEN
-    update_status(text, color)
+    add_to_queue(text, color)
 
 async def heartbeat():
     s = True
@@ -165,21 +171,18 @@ async def heartbeat():
 async def main(client):
     asyncio.create_task(display_task())
     
-    # Infinite Retry Loop
+    # Retry Loop
     while True:
         try:
-            print("Attempting connection...")
+            print("Connecting...")
             await client.connect()
-            # If we reach here, we are connected!
             print("Connected!")
-            break # Exit the retry loop
+            break 
         except OSError as e:
             print(f"Connection Failed: {e}")
-            print("Retrying in 10 seconds...")
-            update_status("Retrying...", RED)
-            await asyncio.sleep(10) # Wait 10s before trying again
+            add_to_queue("Net Retry...", RED)
+            await asyncio.sleep(10) 
 
-    # Once connected, stay alive
     while True:
         await asyncio.sleep(5)
 
