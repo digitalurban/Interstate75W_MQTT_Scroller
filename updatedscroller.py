@@ -8,7 +8,7 @@ import gc
 
 # --- Configuration ---
 BRIGHTNESS = 100        
-SCROLL_SPEED_MS = 70    
+SCROLL_SPEED_MS = 50    
 MIN_DISPLAY_SEC = 5     
 
 # --- Setup ---
@@ -161,21 +161,25 @@ async def heartbeat():
         blue_led(s)
         s = not s
 
-# --- UPDATED MAIN FUNCTION (No Reboot Loop) ---
+# --- AUTO-RETRY MAIN LOOP ---
 async def main(client):
     asyncio.create_task(display_task())
     
-    # Try to connect, but catch errors gracefully
-    try:
-        await client.connect()
-    except OSError as e:
-        print(f"Connection Failed: {e}")
-        update_status("Net Fail", RED)
-        # Do NOT reboot. Just sit here so the user can fix config.py
-        while True:
-            await asyncio.sleep(10)
+    # Infinite Retry Loop
+    while True:
+        try:
+            print("Attempting connection...")
+            await client.connect()
+            # If we reach here, we are connected!
+            print("Connected!")
+            break # Exit the retry loop
+        except OSError as e:
+            print(f"Connection Failed: {e}")
+            print("Retrying in 10 seconds...")
+            update_status("Retrying...", RED)
+            await asyncio.sleep(10) # Wait 10s before trying again
 
-    # If connected, keep running
+    # Once connected, stay alive
     while True:
         await asyncio.sleep(5)
 
