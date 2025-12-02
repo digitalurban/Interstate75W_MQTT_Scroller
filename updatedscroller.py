@@ -8,8 +8,8 @@ import gc
 
 # --- Configuration ---
 BRIGHTNESS = 100        
-SCROLL_SPEED_MS = 50    # 50ms is smooth for single core
-MIN_DISPLAY_SEC = 5     # How long to pause on the message
+SCROLL_SPEED_MS = 70    
+MIN_DISPLAY_SEC = 5     
 
 # --- Setup ---
 i75 = Interstate75(display=Interstate75.DISPLAY_INTERSTATE75_64X32)
@@ -21,7 +21,6 @@ height = i75.height
 def create_pen(r, g, b):
     return graphics.create_pen(int(r*BRIGHTNESS/100), int(g*BRIGHTNESS/100), int(b*BRIGHTNESS/100))
 
-# Pre-define colors to save memory
 BLACK  = create_pen(0, 0, 0)
 WHITE  = create_pen(255, 255, 255)
 RED    = create_pen(255, 0, 0)
@@ -33,7 +32,6 @@ ORANGE = create_pen(255, 165, 0)
 state = { "text": "Booting...", "color": ORANGE, "new_msg": True }
 
 def update_status(text, color):
-    # Only update if changed to avoid unnecessary processing
     if state["text"] != text:
         state["text"] = text
         state["color"] = color
@@ -60,9 +58,7 @@ def draw_frame(lines, y_pos, pen):
     graphics.set_font("bitmap8")
     for i, line in enumerate(lines):
         line_y = y_pos + (i * 8)
-        # Optimization: Don't draw off-screen
         if line_y < -10 or line_y > height: continue
-        
         graphics.set_pen(BLACK)
         for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
             graphics.text(line, 2 + dx, line_y + dy, -1, 1)
@@ -70,69 +66,70 @@ def draw_frame(lines, y_pos, pen):
         graphics.text(line, 2, line_y, -1, 1)
     i75.update(graphics)
 
-# --- The Safe Animation Task ---
+# --- Smart Animation Task ---
 async def display_task():
     graphics.set_pen(BLACK)
     graphics.clear()
     i75.update(graphics)
 
     while True:
-        # 1. Wait for data
         while not state["new_msg"]:
             await asyncio.sleep_ms(100)
         
-        # 2. Setup
         state["new_msg"] = False
         text = state["text"]
         bg_pen = state["color"]
         lines = wrap_text(text)
         total_height = len(lines) * 8
-        center_y = int((height - total_height) / 2)
-        final_y = -(total_height + 2)
+        
+        is_long = total_height > (height - 4) 
 
-        # 3. CRITICAL: GC Lock
-        # We clean memory NOW, then turn off the "janitor" (Garbage Collector)
-        # so it doesn't interrupt our smooth scroll.
         gc.collect()
         gc.disable()
 
         try:
-            # Scroll In
-            y_pos = height
-            while y_pos > center_y:
-                start = time.ticks_ms()
-                draw_frame(lines, y_pos, bg_pen)
-                y_pos -= 1 
-                
-                # Compensated sleep
-                diff = time.ticks_diff(time.ticks_ms(), start)
-                delay = max(1, SCROLL_SPEED_MS - diff)
-                await asyncio.sleep_ms(delay)
+            if is_long:
+                y_pos = height
+                target = -(total_height + 2)
+                while y_pos > target:
+                    start = time.ticks_ms()
+                    draw_frame(lines, y_pos, bg_pen)
+                    y_pos -= 1
+                    diff = time.ticks_diff(time.ticks_ms(), start)
+                    delay = max(1, SCROLL_SPEED_MS - diff)
+                    await asyncio.sleep_ms(delay)
+            else:
+                center_y = int((height - total_height) / 2)
+                final_y = -(total_height + 2)
 
-            # Pause (Unlock GC briefly)
-            gc.enable() 
-            draw_frame(lines, center_y, bg_pen)
-            await asyncio.sleep(MIN_DISPLAY_SEC)
-            gc.collect() # Clean again before exit
-            gc.disable()
+                y_pos = height
+                while y_pos > center_y:
+                    start = time.ticks_ms()
+                    draw_frame(lines, y_pos, bg_pen)
+                    y_pos -= 1 
+                    diff = time.ticks_diff(time.ticks_ms(), start)
+                    delay = max(1, SCROLL_SPEED_MS - diff)
+                    await asyncio.sleep_ms(delay)
 
-            # Scroll Out
-            y_pos = center_y
-            while y_pos > final_y:
-                start = time.ticks_ms()
-                draw_frame(lines, y_pos, bg_pen)
-                y_pos -= 1
-                
-                diff = time.ticks_diff(time.ticks_ms(), start)
-                delay = max(1, SCROLL_SPEED_MS - diff)
-                await asyncio.sleep_ms(delay)
+                gc.enable() 
+                draw_frame(lines, center_y, bg_pen)
+                await asyncio.sleep(MIN_DISPLAY_SEC)
+                gc.collect() 
+                gc.disable()
+
+                y_pos = center_y
+                while y_pos > final_y:
+                    start = time.ticks_ms()
+                    draw_frame(lines, y_pos, bg_pen)
+                    y_pos -= 1
+                    diff = time.ticks_diff(time.ticks_ms(), start)
+                    delay = max(1, SCROLL_SPEED_MS - diff)
+                    await asyncio.sleep_ms(delay)
 
         finally:
-            # ALWAYS re-enable GC when done, even if we crash
             gc.enable()
             gc.collect()
 
-        # Clear
         graphics.set_pen(BLACK)
         graphics.clear()
         i75.update(graphics)
@@ -164,14 +161,21 @@ async def heartbeat():
         blue_led(s)
         s = not s
 
+# --- UPDATED MAIN FUNCTION (No Reboot Loop) ---
 async def main(client):
     asyncio.create_task(display_task())
+    
+    # Try to connect, but catch errors gracefully
     try:
         await client.connect()
-    except OSError:
-        print("Connection failed. Retrying...")
-        machine.reset()
-        
+    except OSError as e:
+        print(f"Connection Failed: {e}")
+        update_status("Net Fail", RED)
+        # Do NOT reboot. Just sit here so the user can fix config.py
+        while True:
+            await asyncio.sleep(10)
+
+    # If connected, keep running
     while True:
         await asyncio.sleep(5)
 
